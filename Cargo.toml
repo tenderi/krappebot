@@ -1,0 +1,37 @@
+[package]
+name = "krappebot"
+version = "0.1.0"
+edition = "2021"
+description = "IRC + Telegram bot that counts krappe (hangovers)"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+
+# Telegram. Disable default native-tls and use rustls so we don't need OpenSSL.
+teloxide = { version = "0.13", default-features = false, features = [
+    "macros",
+    "ctrlc_handler",
+    "rustls",
+] }
+
+# IRC client (aatxe). Disable default tls (which pulls OpenSSL) and use rustls.
+irc = { version = "1", default-features = false, features = [
+    "tls-rust",
+] }
+
+# Storage. SQLite via sqlx, runtime queries (no compile-time DATABASE_URL needed).
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "migrate",
+    "macros",
+] }
+
+chrono = "0.4"
+rand = "0.8"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+dotenvy = "0.15"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures = "0.3"
