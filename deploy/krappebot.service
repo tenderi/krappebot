@@ -1,0 +1,15 @@
+[Unit]
+Description=krappebot — IRC + Telegram hangover counter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs from the repo dir so dotenvy finds .env and the SQLite file lives there.
+WorkingDirectory=%h/krappebot
+ExecStart=%h/krappebot/target/release/krappebot
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

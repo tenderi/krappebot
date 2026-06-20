@@ -7,7 +7,7 @@ use crate::config::IrcConfig;
 use crate::core;
 use crate::db::{self, PLATFORM_IRC};
 use futures::StreamExt;
-use irc::client::prelude::{Client, Command, Config};
+use irc::client::prelude::{Client, Command, Config, Response};
 use irc::proto::{ChannelMode, Mode};
 use sqlx::SqlitePool;
 
@@ -30,15 +30,29 @@ pub async fn run(cfg: IrcConfig, pool: SqlitePool) -> anyhow::Result<()> {
     let mut stream = client.stream()?;
     while let Some(message) = stream.next().await {
         let message = message?;
-        if let Command::PRIVMSG(target, text) = &message.command {
-            // Only act on channel messages (target starts with '#'); ignore PMs.
-            if !target.starts_with('#') {
-                continue;
+        match &message.command {
+            // Join channels only once the server has fully registered us (001).
+            // Relying on Config::channels auto-join races registration on some
+            // networks (e.g. IRCnet), so we join explicitly here.
+            Command::Response(Response::RPL_WELCOME, _) => {
+                for channel in &cfg.channels {
+                    tracing::info!(%channel, "joining channel");
+                    if let Err(e) = client.send_join(channel) {
+                        tracing::warn!(error = %e, %channel, "failed to send JOIN");
+                    }
+                }
             }
-            let Some(nick) = message.source_nickname() else {
-                continue;
-            };
-            handle_command(&client, &pool, target, nick, text).await;
+            Command::PRIVMSG(target, text) => {
+                // Only act on channel messages (target starts with '#'); ignore PMs.
+                if !target.starts_with('#') {
+                    continue;
+                }
+                let Some(nick) = message.source_nickname() else {
+                    continue;
+                };
+                handle_command(&client, &pool, target, nick, text).await;
+            }
+            _ => {}
         }
     }
 
