@@ -12,7 +12,8 @@ concurrent async tasks sharing a single SQLite database.
 | `!naamat` / `/naamat` | gives you **+o** | promotes you and sets a funny admin title (e.g. `KRAPULA`) |
 | `!top` / `/top` | this year's leaderboard (top 20) | this year's leaderboard (top 20) |
 | `!top all` / `/top all` | all-time leaderboard (top 20) | all-time leaderboard (top 20) |
-| `!stat <nick>` / `/stat <nick>` | one nick's totals + rank | one nick's totals + rank |
+| `!stat <nick>` / `/stat <nick>` | nick's current-year count + rank (and all-time) | same |
+| `!stat <nick> all` / `/stat <nick> all` | nick's per-year breakdown | same |
 | `!kalja` / `/kalja` | "Cheers!" in a random language | "Cheers!" in a random language |
 | `!nousuun` / `/nousuun` | encouraging words for the hungover | encouraging words for the hungover |
 | — | — | `/combine <irc nick>` — tie your Telegram account to an IRC nick so the counts merge |

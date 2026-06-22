@@ -125,23 +125,16 @@ async fn answer(bot: Bot, msg: Message, cmd: Command, pool: SqlitePool) -> Respo
         }
 
         Command::Stat(arg) => {
-            let arg = arg.trim();
-            if arg.is_empty() {
-                bot.send_message(msg.chat.id, "Käyttö: /stat <nick>").await?;
-            } else {
-                let canon = core::canonical_irc_nick(arg);
-                match db::nick_stats(&pool, &canon).await {
-                    Ok(Some(stats)) => {
-                        bot.send_message(msg.chat.id, core::format_nick_stats(&stats)).await?;
-                    }
-                    Ok(None) => {
-                        bot.send_message(msg.chat.id, format!("{canon}: ei yhtään krappea."))
-                            .await?;
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "nick_stats failed");
-                        bot.send_message(msg.chat.id, "Tilaston haku epäonnistui.").await?;
-                    }
+            let mut words = arg.split_whitespace();
+            match words.next() {
+                None => {
+                    bot.send_message(msg.chat.id, "Käyttö: /stat <nick> [all]").await?;
+                }
+                Some(nick) => {
+                    let canon = core::canonical_irc_nick(nick);
+                    let all = words.next().is_some_and(|a| a.eq_ignore_ascii_case("all"));
+                    let reply = core::stat_reply(&pool, &canon, all).await;
+                    bot.send_message(msg.chat.id, reply).await?;
                 }
             }
         }

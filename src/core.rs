@@ -143,12 +143,59 @@ pub fn format_leaderboard_inline(header: &str, entries: &[LeaderEntry]) -> Strin
     format!("{header}: {body}")
 }
 
-/// One-line stats for `!stat` / `/stat`.
+/// Default `!stat` / `/stat` output: current year first, all-time as context.
 pub fn format_nick_stats(s: &NickStats) -> String {
+    let year = chrono::Utc::now().format("%Y");
+    let head = if s.year.count > 0 {
+        format!(
+            "{}: {year}: {} krappea (sija {}/{})",
+            s.name, s.year.count, s.year.rank, s.year.people
+        )
+    } else {
+        format!("{}: {year}: ei krappea vielä", s.name)
+    };
     format!(
-        "{}: {} krappea kaikkiaan (sija {}/{}), {} tänä vuonna.",
-        s.name, s.total, s.rank, s.people, s.this_year
+        "{head}. Kaikkiaan {} (sija {}/{}).",
+        s.all.count, s.all.rank, s.all.people
     )
+}
+
+/// Build the `!stat` / `/stat` reply for a canonical nick. `all` selects the
+/// per-year breakdown; otherwise the current-year-primary summary. Shared by
+/// both bots so the wording stays identical.
+pub async fn stat_reply(pool: &sqlx::SqlitePool, canon: &str, all: bool) -> String {
+    if all {
+        match crate::db::nick_yearly(pool, canon).await {
+            Ok(yearly) => format_nick_yearly(canon, &yearly),
+            Err(e) => {
+                tracing::error!(error = %e, "nick_yearly failed");
+                "Tilaston haku epäonnistui.".to_string()
+            }
+        }
+    } else {
+        match crate::db::nick_stats(pool, canon).await {
+            Ok(Some(stats)) => format_nick_stats(&stats),
+            Ok(None) => format!("{canon}: ei yhtään krappea."),
+            Err(e) => {
+                tracing::error!(error = %e, "nick_stats failed");
+                "Tilaston haku epäonnistui.".to_string()
+            }
+        }
+    }
+}
+
+/// `!stat <nick> all` output: per-year breakdown on one line.
+pub fn format_nick_yearly(name: &str, yearly: &[(i32, i64)]) -> String {
+    if yearly.is_empty() {
+        return format!("{name}: ei yhtään krappea.");
+    }
+    let total: i64 = yearly.iter().map(|(_, c)| c).sum();
+    let body = yearly
+        .iter()
+        .map(|(y, c)| format!("{y}: {c}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{name} kautta aikojen: {body}. Yhteensä {total}.")
 }
 
 pub fn scope_header(scope: Scope) -> String {

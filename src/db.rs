@@ -194,13 +194,19 @@ pub async fn leaderboard(pool: &SqlitePool, scope: Scope, limit: i64) -> Result<
         .collect())
 }
 
-/// Stats for a single canonical identity, as shown by `!stat` / `/stat`.
-pub struct NickStats {
-    pub name: String,
-    pub total: i64,
-    pub this_year: i64,
+/// Krappe count, rank, and field size for one nick within a scope.
+pub struct ScopeStats {
+    pub count: i64,
     pub rank: i64,
     pub people: i64,
+}
+
+/// Stats for a single canonical identity, as shown by `!stat` / `/stat`:
+/// the current year (primary) plus all-time totals.
+pub struct NickStats {
+    pub name: String,
+    pub year: ScopeStats,
+    pub all: ScopeStats,
 }
 
 // Canonical-identity expression and join, shared by the stats queries (matches
@@ -210,47 +216,72 @@ const CANON_EXPR: &str =
 const CANON_JOIN: &str =
     "FROM events e LEFT JOIN links l ON e.platform = 'telegram' AND e.user_key = l.telegram_id";
 
-/// All-time and current-year krappe totals plus all-time rank for one canonical
-/// nick. Returns `None` if the nick has no krappe at all.
-pub async fn nick_stats(pool: &SqlitePool, canon: &str) -> Result<Option<NickStats>> {
-    let since = format!("{}-01-01T00:00:00Z", Utc::now().format("%Y"));
-
-    let totals = sqlx::query(&format!(
-        "SELECT COUNT(*) AS total,
-                COALESCE(SUM(CASE WHEN e.created_at >= ? THEN 1 ELSE 0 END), 0) AS this_year
-         {CANON_JOIN}
-         WHERE {CANON_EXPR} = ?"
+/// Count, rank and field size for `canon` within a scope. `since` is an ISO
+/// timestamp lower bound, or "" for all-time. Rank counts identities with a
+/// strictly higher count in the same scope; if the nick has 0 in scope its rank
+/// is meaningless (callers gate on `count`).
+async fn scope_stats(pool: &SqlitePool, canon: &str, since: &str) -> Result<ScopeStats> {
+    let row = sqlx::query(&format!(
+        "WITH counts AS (
+            SELECT {CANON_EXPR} AS canon, COUNT(*) AS c
+            {CANON_JOIN}
+            WHERE (?1 = '' OR e.created_at >= ?1)
+            GROUP BY canon
+         )
+         SELECT
+            COALESCE((SELECT c FROM counts WHERE canon = ?2), 0) AS count,
+            (SELECT COUNT(*) FROM counts
+                WHERE c > COALESCE((SELECT c FROM counts WHERE canon = ?2), 0)) + 1 AS rank,
+            (SELECT COUNT(*) FROM counts) AS people"
     ))
-    .bind(&since)
+    .bind(since)
     .bind(canon)
     .fetch_one(pool)
     .await?;
 
-    let total: i64 = totals.get("total");
-    if total == 0 {
+    Ok(ScopeStats {
+        count: row.get("count"),
+        rank: row.get("rank"),
+        people: row.get("people"),
+    })
+}
+
+/// Current-year and all-time stats for one nick. `None` if the nick has no
+/// krappe ever.
+pub async fn nick_stats(pool: &SqlitePool, canon: &str) -> Result<Option<NickStats>> {
+    let all = scope_stats(pool, canon, "").await?;
+    if all.count == 0 {
         return Ok(None);
     }
-    let this_year: i64 = totals.get("this_year");
-
-    // Rank = 1 + how many identities have a strictly higher all-time total.
-    let ranking = sqlx::query(&format!(
-        "WITH counts AS (
-            SELECT {CANON_EXPR} AS canon, COUNT(*) AS c {CANON_JOIN} GROUP BY canon
-         )
-         SELECT (SELECT COUNT(*) FROM counts WHERE c > ?) + 1 AS rank,
-                (SELECT COUNT(*) FROM counts) AS people"
-    ))
-    .bind(total)
-    .fetch_one(pool)
-    .await?;
-
+    let since = format!("{}-01-01T00:00:00Z", Utc::now().format("%Y"));
+    let year = scope_stats(pool, canon, &since).await?;
     Ok(Some(NickStats {
         name: canon.to_string(),
-        total,
-        this_year,
-        rank: ranking.get("rank"),
-        people: ranking.get("people"),
+        year,
+        all,
     }))
+}
+
+/// Per-year krappe counts for one nick, oldest year first. Empty if never seen.
+pub async fn nick_yearly(pool: &SqlitePool, canon: &str) -> Result<Vec<(i32, i64)>> {
+    let rows = sqlx::query(&format!(
+        "SELECT substr(e.created_at, 1, 4) AS yr, COUNT(*) AS c
+         {CANON_JOIN}
+         WHERE {CANON_EXPR} = ?
+         GROUP BY yr
+         ORDER BY yr"
+    ))
+    .bind(canon)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| {
+            let yr: String = r.get("yr");
+            yr.parse::<i32>().ok().map(|y| (y, r.get::<i64, _>("c")))
+        })
+        .collect())
 }
 
 /// Tie a Telegram user id to an IRC nick (last writer wins).
@@ -370,13 +401,16 @@ mod tests {
         record_krappe(&pool, PLATFORM_IRC, "spott", "spott").await.unwrap();
 
         let maska = nick_stats(&pool, "maska").await.unwrap().unwrap();
-        assert_eq!(maska.total, 3);
-        assert_eq!(maska.rank, 1);
-        assert_eq!(maska.people, 2);
+        assert_eq!(maska.all.count, 3);
+        assert_eq!(maska.all.rank, 1);
+        assert_eq!(maska.all.people, 2);
+        assert_eq!(maska.year.count, 0, "maska's krappe were in 2020, not this year");
 
         let spott = nick_stats(&pool, "spott").await.unwrap().unwrap();
-        assert_eq!(spott.rank, 2, "fewer krappe -> lower rank");
+        assert_eq!(spott.all.rank, 2, "fewer krappe -> lower rank");
+        assert_eq!(spott.year.count, 1, "spott krappe'd this year");
 
+        assert_eq!(nick_yearly(&pool, "maska").await.unwrap(), vec![(2020, 3)]);
         assert!(nick_stats(&pool, "nobody").await.unwrap().is_none());
     }
 }

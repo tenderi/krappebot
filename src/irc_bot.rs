@@ -137,23 +137,13 @@ async fn handle_command(
 
         "!stat" => match parts.next() {
             None => {
-                let _ = client.send_privmsg(channel, "Käyttö: !stat <nick>");
+                let _ = client.send_privmsg(channel, "Käyttö: !stat <nick> [all]");
             }
             Some(arg) => {
                 let canon = core::canonical_irc_nick(arg);
-                match db::nick_stats(pool, &canon).await {
-                    Ok(Some(stats)) => {
-                        let _ = client.send_privmsg(channel, core::format_nick_stats(&stats));
-                    }
-                    Ok(None) => {
-                        let _ = client
-                            .send_privmsg(channel, format!("{canon}: ei yhtään krappea."));
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "nick_stats failed");
-                        let _ = client.send_privmsg(channel, "Tilaston haku epäonnistui.");
-                    }
-                }
+                let all = parts.next().is_some_and(|a| a.eq_ignore_ascii_case("all"));
+                let reply = core::stat_reply(pool, &canon, all).await;
+                let _ = client.send_privmsg(channel, reply);
             }
         },
 
