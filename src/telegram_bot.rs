@@ -19,6 +19,8 @@ enum Command {
     Naamat,
     #[command(description = "krappe-tilasto (lisää 'all' kaikkien aikojen listalle)")]
     Top(String),
+    #[command(description = "yhden nimimerkin tilastot: /stat <nick>")]
+    Stat(String),
     #[command(description = "kippis jollain kielellä")]
     Kalja,
     #[command(description = "kannustusta krapulaiselle nousuhumalan tielle")]
@@ -118,6 +120,28 @@ async fn answer(bot: Bot, msg: Message, cmd: Command, pool: SqlitePool) -> Respo
                     tracing::error!(error = %e, "leaderboard failed");
                     bot.send_message(msg.chat.id, "Tilaston haku epäonnistui.")
                         .await?;
+                }
+            }
+        }
+
+        Command::Stat(arg) => {
+            let arg = arg.trim();
+            if arg.is_empty() {
+                bot.send_message(msg.chat.id, "Käyttö: /stat <nick>").await?;
+            } else {
+                let canon = core::canonical_irc_nick(arg);
+                match db::nick_stats(&pool, &canon).await {
+                    Ok(Some(stats)) => {
+                        bot.send_message(msg.chat.id, core::format_nick_stats(&stats)).await?;
+                    }
+                    Ok(None) => {
+                        bot.send_message(msg.chat.id, format!("{canon}: ei yhtään krappea."))
+                            .await?;
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "nick_stats failed");
+                        bot.send_message(msg.chat.id, "Tilaston haku epäonnistui.").await?;
+                    }
                 }
             }
         }

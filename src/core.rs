@@ -3,7 +3,7 @@
 //! various random phrase lists. Per project rule, none of these strings contain
 //! emojis.
 
-use crate::db::{LeaderEntry, Scope};
+use crate::db::{LeaderEntry, NickStats, Scope};
 use rand::seq::SliceRandom;
 
 /// Collapse alt-nicks to a canonical key so the same person's krappe merge:
@@ -141,6 +141,14 @@ pub fn format_leaderboard_inline(header: &str, entries: &[LeaderEntry]) -> Strin
         .collect::<Vec<_>>()
         .join(", ");
     format!("{header}: {body}")
+}
+
+/// One-line stats for `!stat` / `/stat`.
+pub fn format_nick_stats(s: &NickStats) -> String {
+    format!(
+        "{}: {} krappea kaikkiaan (sija {}/{}), {} tänä vuonna.",
+        s.name, s.total, s.rank, s.people, s.this_year
+    )
 }
 
 pub fn scope_header(scope: Scope) -> String {

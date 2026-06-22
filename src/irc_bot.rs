@@ -135,6 +135,28 @@ async fn handle_command(
             }
         }
 
+        "!stat" => match parts.next() {
+            None => {
+                let _ = client.send_privmsg(channel, "Käyttö: !stat <nick>");
+            }
+            Some(arg) => {
+                let canon = core::canonical_irc_nick(arg);
+                match db::nick_stats(pool, &canon).await {
+                    Ok(Some(stats)) => {
+                        let _ = client.send_privmsg(channel, core::format_nick_stats(&stats));
+                    }
+                    Ok(None) => {
+                        let _ = client
+                            .send_privmsg(channel, format!("{canon}: ei yhtään krappea."));
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "nick_stats failed");
+                        let _ = client.send_privmsg(channel, "Tilaston haku epäonnistui.");
+                    }
+                }
+            }
+        },
+
         _ => {}
     }
 }

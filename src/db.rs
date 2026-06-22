@@ -194,6 +194,65 @@ pub async fn leaderboard(pool: &SqlitePool, scope: Scope, limit: i64) -> Result<
         .collect())
 }
 
+/// Stats for a single canonical identity, as shown by `!stat` / `/stat`.
+pub struct NickStats {
+    pub name: String,
+    pub total: i64,
+    pub this_year: i64,
+    pub rank: i64,
+    pub people: i64,
+}
+
+// Canonical-identity expression and join, shared by the stats queries (matches
+// the grouping used in `leaderboard`).
+const CANON_EXPR: &str =
+    "COALESCE(l.irc_nick, CASE WHEN e.platform = 'telegram' THEN 'tg:' || e.user_key ELSE e.user_key END)";
+const CANON_JOIN: &str =
+    "FROM events e LEFT JOIN links l ON e.platform = 'telegram' AND e.user_key = l.telegram_id";
+
+/// All-time and current-year krappe totals plus all-time rank for one canonical
+/// nick. Returns `None` if the nick has no krappe at all.
+pub async fn nick_stats(pool: &SqlitePool, canon: &str) -> Result<Option<NickStats>> {
+    let since = format!("{}-01-01T00:00:00Z", Utc::now().format("%Y"));
+
+    let totals = sqlx::query(&format!(
+        "SELECT COUNT(*) AS total,
+                COALESCE(SUM(CASE WHEN e.created_at >= ? THEN 1 ELSE 0 END), 0) AS this_year
+         {CANON_JOIN}
+         WHERE {CANON_EXPR} = ?"
+    ))
+    .bind(&since)
+    .bind(canon)
+    .fetch_one(pool)
+    .await?;
+
+    let total: i64 = totals.get("total");
+    if total == 0 {
+        return Ok(None);
+    }
+    let this_year: i64 = totals.get("this_year");
+
+    // Rank = 1 + how many identities have a strictly higher all-time total.
+    let ranking = sqlx::query(&format!(
+        "WITH counts AS (
+            SELECT {CANON_EXPR} AS canon, COUNT(*) AS c {CANON_JOIN} GROUP BY canon
+         )
+         SELECT (SELECT COUNT(*) FROM counts WHERE c > ?) + 1 AS rank,
+                (SELECT COUNT(*) FROM counts) AS people"
+    ))
+    .bind(total)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(Some(NickStats {
+        name: canon.to_string(),
+        total,
+        this_year,
+        rank: ranking.get("rank"),
+        people: ranking.get("people"),
+    }))
+}
+
 /// Tie a Telegram user id to an IRC nick (last writer wins).
 pub async fn link_combine(pool: &SqlitePool, telegram_id: &str, irc_nick: &str) -> Result<()> {
     let now = Utc::now().to_rfc3339();
@@ -293,5 +352,31 @@ mod tests {
         let board = leaderboard(&pool, Scope::All, 10).await.unwrap();
         assert_eq!(board.len(), 1);
         assert_eq!(board[0].count, 1, "only one krappe counted for the day");
+    }
+
+    /// nick_stats reports totals and rank, and None for an unknown nick.
+    #[tokio::test]
+    async fn nick_stats_reports_total_and_rank() {
+        let pool = mem_pool().await;
+        for _ in 0..3 {
+            sqlx::query(
+                "INSERT INTO events (platform, user_key, display_name, created_at)
+                 VALUES ('irc', 'maska', 'maska', '2020-01-01T00:00:00Z')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        record_krappe(&pool, PLATFORM_IRC, "spott", "spott").await.unwrap();
+
+        let maska = nick_stats(&pool, "maska").await.unwrap().unwrap();
+        assert_eq!(maska.total, 3);
+        assert_eq!(maska.rank, 1);
+        assert_eq!(maska.people, 2);
+
+        let spott = nick_stats(&pool, "spott").await.unwrap().unwrap();
+        assert_eq!(spott.rank, 2, "fewer krappe -> lower rank");
+
+        assert!(nick_stats(&pool, "nobody").await.unwrap().is_none());
     }
 }
