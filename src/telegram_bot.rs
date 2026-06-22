@@ -64,14 +64,18 @@ async fn answer(bot: Bot, msg: Message, cmd: Command, pool: SqlitePool) -> Respo
 
     match cmd {
         Command::Krappe => {
-            match db::record_krappe(&pool, PLATFORM_TELEGRAM, &user_key, &display).await {
-                Ok(count) => {
-                    let text = format!("🍺 {display} otti krappen! Yhteensä: {count}");
+            match db::record_krappe_daily(&pool, PLATFORM_TELEGRAM, &user_key, &display).await {
+                Ok(db::KrappeOutcome::Recorded(count)) => {
+                    let text = format!("{display} otti krappen! Yhteensä: {count}");
+                    bot.send_message(msg.chat.id, text).await?;
+                }
+                Ok(db::KrappeOutcome::AlreadyToday(count)) => {
+                    let text = format!("{display}: {} (Yhteensä: {count})", core::random_shame());
                     bot.send_message(msg.chat.id, text).await?;
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "record_krappe failed");
-                    bot.send_message(msg.chat.id, "Krappen tallennus epäonnistui 😵")
+                    bot.send_message(msg.chat.id, "Krappen tallennus epäonnistui.")
                         .await?;
                 }
             }
@@ -95,7 +99,7 @@ async fn answer(bot: Bot, msg: Message, cmd: Command, pool: SqlitePool) -> Respo
             };
 
             let text = if titled {
-                format!("👑 {display} on naamat, kunnollista! Uusi arvonimi: «{title}» 🍺")
+                format!("{display} on naamat, kunnollista! Uusi arvonimi: «{title}»")
             } else {
                 // Fallback when the bot lacks admin rights or it's a private chat.
                 format!("👑 {display} on naamat, kunnollista!")
@@ -112,7 +116,7 @@ async fn answer(bot: Bot, msg: Message, cmd: Command, pool: SqlitePool) -> Respo
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "leaderboard failed");
-                    bot.send_message(msg.chat.id, "Tilaston haku epäonnistui 😵")
+                    bot.send_message(msg.chat.id, "Tilaston haku epäonnistui.")
                         .await?;
                 }
             }
@@ -132,17 +136,18 @@ async fn answer(bot: Bot, msg: Message, cmd: Command, pool: SqlitePool) -> Respo
                 bot.send_message(msg.chat.id, "Käyttö: /combine <irc-nick>")
                     .await?;
             } else {
-                match db::link_combine(&pool, &user_key, nick).await {
+                // Store the same canonical form the IRC events use, so counts merge.
+                let canon = core::canonical_irc_nick(nick);
+                match db::link_combine(&pool, &user_key, &canon).await {
                     Ok(()) => {
                         let text = format!(
-                            "🔗 {display} yhdistetty IRC-nimimerkkiin «{}». Krappet lasketaan nyt yhteen.",
-                            nick.to_lowercase()
+                            "{display} yhdistetty IRC-nimimerkkiin «{canon}». Krappet lasketaan nyt yhteen."
                         );
                         bot.send_message(msg.chat.id, text).await?;
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "link_combine failed");
-                        bot.send_message(msg.chat.id, "Yhdistäminen epäonnistui 😵")
+                        bot.send_message(msg.chat.id, "Yhdistäminen epäonnistui.")
                             .await?;
                     }
                 }

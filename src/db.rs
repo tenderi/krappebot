@@ -64,6 +64,43 @@ pub async fn record_krappe(
     count_for(pool, platform, user_key).await
 }
 
+/// Outcome of an at-most-once-per-day krappe attempt.
+pub enum KrappeOutcome {
+    /// First krappe today; recorded. Carries the new total.
+    Recorded(i64),
+    /// Already krappe'd today; nothing recorded. Carries the existing total.
+    AlreadyToday(i64),
+}
+
+/// Record a krappe only if this (platform, user_key) has none yet today (UTC).
+/// A second attempt the same day is rejected so it can be shamed instead.
+pub async fn record_krappe_daily(
+    pool: &SqlitePool,
+    platform: &str,
+    user_key: &str,
+    display_name: &str,
+) -> Result<KrappeOutcome> {
+    let today = Utc::now().format("%Y-%m-%d").to_string();
+    let existing: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM events
+         WHERE platform = ? AND user_key = ? AND substr(created_at, 1, 10) = ?",
+    )
+    .bind(platform)
+    .bind(user_key)
+    .bind(&today)
+    .fetch_one(pool)
+    .await?;
+
+    if existing > 0 {
+        return Ok(KrappeOutcome::AlreadyToday(
+            count_for(pool, platform, user_key).await?,
+        ));
+    }
+    Ok(KrappeOutcome::Recorded(
+        record_krappe(pool, platform, user_key, display_name).await?,
+    ))
+}
+
 /// All-time count for the canonical identity behind a single (platform, user_key).
 async fn count_for(pool: &SqlitePool, platform: &str, user_key: &str) -> Result<i64> {
     // Resolve this event's canonical key, then count everything sharing it.
@@ -237,5 +274,24 @@ mod tests {
         let year = leaderboard(&pool, Scope::Year, 10).await.unwrap();
         assert_eq!(year.len(), 1, "current-year scope hides the old event");
         assert_eq!(year[0].display, "now");
+    }
+
+    /// A second krappe on the same day is rejected; the count stays put.
+    #[tokio::test]
+    async fn daily_dedup_blocks_second_krappe() {
+        let pool = mem_pool().await;
+
+        match record_krappe_daily(&pool, PLATFORM_IRC, "helge", "helge").await.unwrap() {
+            KrappeOutcome::Recorded(1) => {}
+            _ => panic!("first krappe of the day should be recorded with count 1"),
+        }
+        match record_krappe_daily(&pool, PLATFORM_IRC, "helge", "helge").await.unwrap() {
+            KrappeOutcome::AlreadyToday(1) => {}
+            _ => panic!("second krappe same day should be rejected, count still 1"),
+        }
+
+        let board = leaderboard(&pool, Scope::All, 10).await.unwrap();
+        assert_eq!(board.len(), 1);
+        assert_eq!(board[0].count, 1, "only one krappe counted for the day");
     }
 }

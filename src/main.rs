@@ -3,14 +3,9 @@
 //! Runs both bots as concurrent tasks sharing one SQLite store. Each platform is
 //! enabled only if its config is present, so you can develop against one at a time.
 
-mod config;
-mod core;
-mod db;
-mod irc_bot;
-mod telegram_bot;
-
 use anyhow::Result;
-use config::Config;
+use krappebot::config::Config;
+use krappebot::{db, irc_bot, telegram_bot};
 
 #[tokio::main]
 async fn main() -> Result<()> {

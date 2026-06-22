@@ -84,25 +84,31 @@ async fn handle_command(
 
     match cmd {
         "!krappe" => {
-            let key = nick.to_lowercase();
-            match db::record_krappe(pool, PLATFORM_IRC, &key, nick).await {
-                Ok(count) => {
+            let key = core::canonical_irc_nick(nick);
+            match db::record_krappe_daily(pool, PLATFORM_IRC, &key, nick).await {
+                Ok(db::KrappeOutcome::Recorded(count)) => {
                     set_mode(client, channel, ChannelMode::Voice, nick);
                     let _ = client.send_privmsg(
                         channel,
-                        format!("🍺 {nick} otti krappen! Yhteensä: {count}"),
+                        format!("{nick} otti krappen! Yhteensä: {count}"),
+                    );
+                }
+                Ok(db::KrappeOutcome::AlreadyToday(count)) => {
+                    let _ = client.send_privmsg(
+                        channel,
+                        format!("{nick}: {} (Yhteensä: {count})", core::random_shame()),
                     );
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "record_krappe failed");
-                    let _ = client.send_privmsg(channel, "Krappen tallennus epäonnistui 😵");
+                    let _ = client.send_privmsg(channel, "Krappen tallennus epäonnistui.");
                 }
             }
         }
 
         "!naamat" => {
             set_mode(client, channel, ChannelMode::Oper, nick);
-            let _ = client.send_privmsg(channel, format!("👑 {nick} on naamat, kunnollista!"));
+            let _ = client.send_privmsg(channel, format!("{nick} on naamat, kunnollista!"));
         }
 
         "!kalja" => {

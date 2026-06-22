@@ -4,3 +4,7 @@
 *.db-journal
 *.db-wal
 *.db-shm
+
+# IRC channel logs used for retrospective import — never commit these.
+*.log
+#tty-krappe.log

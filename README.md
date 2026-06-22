@@ -22,6 +22,28 @@ Counts are stored per event. IRC events are keyed by nick; Telegram events by us
 A Telegram user who runs `/combine <irc nick>` has their krappe merged under that IRC nick
 on the leaderboard. Without `/combine`, IRC and Telegram totals stay separate.
 
+Alt-nicks are merged automatically: a nick is canonicalized by lowercasing, dropping any
+`|`/`[` away-suffix, and stripping trailing reconnect markers (`_ - \``), so `Kukakumma_`
+and `kukakumma` count as one person.
+
+## Once per day
+
+`!krappe` / `/krappe` counts **at most once per person per calendar day** — a hangover is a
+hangover. A second attempt the same day is not counted and earns a gentle shaming reply.
+
+## Importing historical IRC logs
+
+To backfill stats from an irssi channel log, point the importer at it:
+
+```bash
+DATABASE_URL=sqlite://krappe.db cargo run --release --bin import -- "#tty-krappe.log"
+```
+
+It parses `!krappe` lines (including the log owner's own nick-less `>` lines, attributed to
+`tenderi`), applies the same canonicalization and once-per-day rule, and **replaces** all
+existing IRC events with what it parsed. Telegram events are left untouched. Stop the bot
+first so the database isn't being written concurrently. Logs are gitignored — never commit them.
+
 ## Setup
 
 1. Install Rust (see below) and the C build tools.
