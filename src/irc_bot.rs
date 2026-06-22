@@ -102,10 +102,7 @@ async fn handle_command(
 
         "!naamat" => {
             set_mode(client, channel, ChannelMode::Oper, nick);
-            let _ = client.send_privmsg(
-                channel,
-                format!("👑 {nick} on niin naamat että jakaa oppeja! +o annettu."),
-            );
+            let _ = client.send_privmsg(channel, format!("👑 {nick} on naamat, kunnollista!"));
         }
 
         "!kalja" => {

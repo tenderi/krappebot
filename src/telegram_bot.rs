@@ -95,10 +95,10 @@ async fn answer(bot: Bot, msg: Message, cmd: Command, pool: SqlitePool) -> Respo
             };
 
             let text = if titled {
-                format!("👑 {display} on virallisesti SAMMUNUT. Uusi arvonimi: «{title}» 🍺")
+                format!("👑 {display} on naamat, kunnollista! Uusi arvonimi: «{title}» 🍺")
             } else {
                 // Fallback when the bot lacks admin rights or it's a private chat.
-                format!("💀🍺 {display} on niin naamat, ettei pysy pystyssä! (botti ei ole admin, joten titteli jäi antamatta)")
+                format!("👑 {display} on naamat, kunnollista!")
             };
             bot.send_message(msg.chat.id, text).await?;
         }
