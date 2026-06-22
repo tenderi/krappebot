@@ -128,6 +128,21 @@ pub fn format_leaderboard(header: &str, entries: &[LeaderEntry]) -> String {
     out.trim_end().to_string()
 }
 
+/// Like [`format_leaderboard`] but on a single line (entries joined by ", "),
+/// for IRC where one PRIVMSG cannot contain newlines.
+pub fn format_leaderboard_inline(header: &str, entries: &[LeaderEntry]) -> String {
+    if entries.is_empty() {
+        return format!("{header}: ei yhtään krappea vielä. Hienoa työtä!");
+    }
+    let body = entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| format!("{}. {} - {}", i + 1, e.display, e.count))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{header}: {body}")
+}
+
 pub fn scope_header(scope: Scope) -> String {
     match scope {
         Scope::Year => format!("Krappe-tilasto {}", chrono::Utc::now().format("%Y")),

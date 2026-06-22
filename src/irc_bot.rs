@@ -123,15 +123,14 @@ async fn handle_command(
             let scope = core::parse_scope(parts.next().unwrap_or(""));
             match db::leaderboard(pool, scope, 20).await {
                 Ok(entries) => {
-                    let text = core::format_leaderboard(&core::scope_header(scope), &entries);
-                    // IRC lines can't contain newlines; send one PRIVMSG per line.
-                    for line in text.lines() {
-                        let _ = client.send_privmsg(channel, line);
-                    }
+                    // Single message: IRC can't put newlines in one PRIVMSG, so join inline.
+                    let text =
+                        core::format_leaderboard_inline(&core::scope_header(scope), &entries);
+                    let _ = client.send_privmsg(channel, text);
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "leaderboard failed");
-                    let _ = client.send_privmsg(channel, "Tilaston haku epäonnistui 😵");
+                    let _ = client.send_privmsg(channel, "Tilaston haku epäonnistui.");
                 }
             }
         }
