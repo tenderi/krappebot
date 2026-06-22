@@ -28,17 +28,29 @@ pub async fn run(cfg: IrcConfig, pool: SqlitePool) -> anyhow::Result<()> {
     tracing::info!(server = %cfg.server, "connected to IRC");
 
     let mut stream = client.stream()?;
+    let mut joined = false;
     while let Some(message) = stream.next().await {
         let message = message?;
         match &message.command {
-            // Join channels only once the server has fully registered us (001).
-            // Relying on Config::channels auto-join races registration on some
-            // networks (e.g. IRCnet), so we join explicitly here.
-            Command::Response(Response::RPL_WELCOME, _) => {
-                for channel in &cfg.channels {
-                    tracing::info!(%channel, "joining channel");
-                    if let Err(e) = client.send_join(channel) {
-                        tracing::warn!(error = %e, %channel, "failed to send JOIN");
+            // Join channels only once the server has fully registered us. Relying on
+            // Config::channels auto-join races registration on some networks (e.g.
+            // IRCnet), so we join explicitly. We trigger on the welcome (001) and also
+            // on end-of-MOTD (376) / no-MOTD (422) as a fallback, guarded so we only
+            // join once.
+            Command::Response(code, args) => {
+                tracing::debug!(?code, ?args, "server numeric");
+                if !joined
+                    && matches!(
+                        code,
+                        Response::RPL_WELCOME | Response::RPL_ENDOFMOTD | Response::ERR_NOMOTD
+                    )
+                {
+                    joined = true;
+                    for channel in &cfg.channels {
+                        tracing::info!(%channel, "joining channel");
+                        if let Err(e) = client.send_join(channel) {
+                            tracing::warn!(error = %e, %channel, "failed to send JOIN");
+                        }
                     }
                 }
             }
