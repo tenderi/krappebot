@@ -21,6 +21,55 @@ pub fn random_naamat_title() -> &'static str {
         .unwrap_or("KRAPULA")
 }
 
+/// "Cheers!" in assorted languages for `!kalja` / `/kalja`.
+pub const CHEERS: &[&str] = &[
+    "Kippis! 🍺",
+    "Skål! 🍺",
+    "Cheers! 🍺",
+    "Prost! 🍺",
+    "Santé! 🍺",
+    "Salud! 🍺",
+    "Salute! 🍺",
+    "Na zdrowie! 🍺",
+    "Na zdorovie! 🍺",
+    "Kanpai! 🍺",
+    "Gānbēi! 🍺",
+    "Sláinte! 🍺",
+    "Proost! 🍺",
+    "Saúde! 🍺",
+    "Yamas! 🍺",
+    "Şerefe! 🍺",
+    "Egészségedre! 🍺",
+    "Noroc! 🍺",
+];
+
+pub fn random_cheers() -> &'static str {
+    CHEERS
+        .choose(&mut rand::thread_rng())
+        .copied()
+        .unwrap_or("Kippis! 🍺")
+}
+
+/// Encouraging words for `!nousuun` / `/nousuun` — cheering on the weary as they
+/// try to drink their way out of the hangover (nousuhumala).
+pub const NOUSUUN_WORDS: &[&str] = &[
+    "Yksi kalja vielä, niin nousuhumala iskee! Sisua peliin! 💪🍺",
+    "Krapula on vain heikkojen tila. Nouse ja juo, sankari! 🦸",
+    "Klaara lasi, niin maailma kirkastuu taas. Sinä pystyt tähän! 🌅",
+    "Älä anna periksi — paras humala on nousuhumala. Kohti uusia seikkailuja! 🚀",
+    "Pää kipeä? Lääke on tunnettu. Pohjat ja nousuun! 🍻",
+    "Eilinen oli kova, mutta sinä olet kovempi. Yksi vielä ja lentoon! ✈️",
+    "Vesilasi on petturi. Tartu kaljaan ja nouse tuhkasta kuin feeniks! 🔥",
+    "Nousuhumala kutsuu. Vastaa rohkeasti — krapula kumartaa pian! 👑",
+];
+
+pub fn random_nousuun() -> &'static str {
+    NOUSUUN_WORDS
+        .choose(&mut rand::thread_rng())
+        .copied()
+        .unwrap_or("Pohjat ja nousuun! 🍻")
+}
+
 /// Interpret the argument to a top command: "all" -> all-time, anything else -> year.
 pub fn parse_scope(arg: &str) -> Scope {
     if arg.trim().eq_ignore_ascii_case("all") {

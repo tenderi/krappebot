@@ -108,6 +108,14 @@ async fn handle_command(
             );
         }
 
+        "!kalja" => {
+            let _ = client.send_privmsg(channel, core::random_cheers());
+        }
+
+        "!nousuun" => {
+            let _ = client.send_privmsg(channel, core::random_nousuun());
+        }
+
         "!top" => {
             let scope = core::parse_scope(parts.next().unwrap_or(""));
             match db::leaderboard(pool, scope, 20).await {

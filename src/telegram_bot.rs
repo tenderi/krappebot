@@ -19,6 +19,10 @@ enum Command {
     Naamat,
     #[command(description = "krappe-tilasto (lisää 'all' kaikkien aikojen listalle)")]
     Top(String),
+    #[command(description = "kippis jollain kielellä")]
+    Kalja,
+    #[command(description = "kannustusta krapulaiselle nousuhumalan tielle")]
+    Nousuun,
     #[command(description = "yhdistä Telegram-tilisi IRC-nimimerkkiin: /combine <nick>")]
     Combine(String),
 }
@@ -112,6 +116,14 @@ async fn answer(bot: Bot, msg: Message, cmd: Command, pool: SqlitePool) -> Respo
                         .await?;
                 }
             }
+        }
+
+        Command::Kalja => {
+            bot.send_message(msg.chat.id, core::random_cheers()).await?;
+        }
+
+        Command::Nousuun => {
+            bot.send_message(msg.chat.id, core::random_nousuun()).await?;
         }
 
         Command::Combine(arg) => {
