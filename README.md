@@ -57,7 +57,10 @@ first so the database isn't being written concurrently. Logs are gitignored — 
 - **Telegram:** create a bot with [@BotFather](https://t.me/BotFather). For `/naamat` to set
   a custom admin title, add the bot to the group **as an admin** with the "Add new admins"
   right. If it lacks that right it falls back to a text-only "wasted" message. Note Telegram
-  only lets a bot title admins it promoted, and titles are capped at 16 characters.
+  only lets a bot title admins it promoted, and titles are capped at 16 characters. The bot
+  registers its command list with Telegram (`setMyCommands`) on every startup, so `/krappe`,
+  `/naamat`, etc. show up in each chat's `/` command menu automatically — no manual
+  BotFather step needed.
 - **IRC:** the bot must be **opped** in the channel to grant `+v` / `+o`. Set
   `IRC_NICKSERV_PASSWORD` if the nick is registered.
 

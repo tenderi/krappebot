@@ -221,7 +221,9 @@ const CANON_JOIN: &str =
 /// strictly higher count in the same scope; if the nick has 0 in scope its rank
 /// is meaningless (callers gate on `count`).
 async fn scope_stats(pool: &SqlitePool, canon: &str, since: &str) -> Result<ScopeStats> {
-    let row = sqlx::query(&format!(
+    // Safe: only the static CANON_EXPR/CANON_JOIN constants are interpolated into the
+    // SQL text; all caller-supplied values (`since`, `canon`) go through binds below.
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
         "WITH counts AS (
             SELECT {CANON_EXPR} AS canon, COUNT(*) AS c
             {CANON_JOIN}
@@ -233,7 +235,7 @@ async fn scope_stats(pool: &SqlitePool, canon: &str, since: &str) -> Result<Scop
             (SELECT COUNT(*) FROM counts
                 WHERE c > COALESCE((SELECT c FROM counts WHERE canon = ?2), 0)) + 1 AS rank,
             (SELECT COUNT(*) FROM counts) AS people"
-    ))
+    )))
     .bind(since)
     .bind(canon)
     .fetch_one(pool)
@@ -264,13 +266,15 @@ pub async fn nick_stats(pool: &SqlitePool, canon: &str) -> Result<Option<NickSta
 
 /// Per-year krappe counts for one nick, oldest year first. Empty if never seen.
 pub async fn nick_yearly(pool: &SqlitePool, canon: &str) -> Result<Vec<(i32, i64)>> {
-    let rows = sqlx::query(&format!(
+    // Safe: only the static CANON_EXPR/CANON_JOIN constants are interpolated into the
+    // SQL text; the caller-supplied `canon` goes through the bind below.
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT substr(e.created_at, 1, 4) AS yr, COUNT(*) AS c
          {CANON_JOIN}
          WHERE {CANON_EXPR} = ?
          GROUP BY yr
          ORDER BY yr"
-    ))
+    )))
     .bind(canon)
     .fetch_all(pool)
     .await?;

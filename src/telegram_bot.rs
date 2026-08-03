@@ -34,6 +34,11 @@ pub async fn run(cfg: TelegramConfig, pool: SqlitePool) -> anyhow::Result<()> {
     let bot = Bot::new(cfg.token);
     tracing::info!("starting Telegram bot");
 
+    // Publish the command list so Telegram shows it in the client's "/" menu.
+    if let Err(e) = bot.set_my_commands(Command::bot_commands()).await {
+        tracing::warn!(error = %e, "failed to register bot commands with Telegram");
+    }
+
     let handler = Update::filter_message()
         .filter_command::<Command>()
         .endpoint(answer);
