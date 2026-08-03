@@ -19,7 +19,7 @@ enum Command {
     Naamat,
     #[command(description = "krappe-tilasto (lisää 'all' kaikkien aikojen listalle)")]
     Top(String),
-    #[command(description = "yhden nimimerkin tilastot: /stat <nick>")]
+    #[command(description = "tilastot: /stat [nick] [all] (ilman nickiä omat tilastosi)")]
     Stat(String),
     #[command(description = "kippis jollain kielellä")]
     Kalja,
@@ -130,18 +130,26 @@ async fn answer(bot: Bot, msg: Message, cmd: Command, pool: SqlitePool) -> Respo
         }
 
         Command::Stat(arg) => {
-            let mut words = arg.split_whitespace();
-            match words.next() {
-                None => {
-                    bot.send_message(msg.chat.id, "Käyttö: /stat <nick> [all]").await?;
-                }
+            let (nick_arg, all) = core::parse_stat_args(arg.split_whitespace());
+            let (canon, name) = match nick_arg {
                 Some(nick) => {
-                    let canon = core::canonical_irc_nick(nick);
-                    let all = words.next().is_some_and(|a| a.eq_ignore_ascii_case("all"));
-                    let reply = core::stat_reply(&pool, &canon, all).await;
-                    bot.send_message(msg.chat.id, reply).await?;
+                    let c = core::canonical_irc_nick(nick);
+                    (c.clone(), c)
                 }
-            }
+                None => match db::canonical_key(&pool, PLATFORM_TELEGRAM, &user_key).await {
+                    Ok(c) => {
+                        let name = if c.starts_with("tg:") { display.clone() } else { c.clone() };
+                        (c, name)
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "canonical_key failed");
+                        bot.send_message(msg.chat.id, "Tilaston haku epäonnistui.").await?;
+                        return Ok(());
+                    }
+                },
+            };
+            let reply = core::stat_reply(&pool, &canon, &name, all).await;
+            bot.send_message(msg.chat.id, reply).await?;
         }
 
         Command::Kalja => {

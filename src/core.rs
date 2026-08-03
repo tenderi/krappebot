@@ -116,6 +116,22 @@ pub fn parse_scope(arg: &str) -> Scope {
     }
 }
 
+/// Parse `!stat`/`/stat` arguments into an optional nick and the "all" flag.
+/// No words -> no nick, current-year scope. A lone "all" -> no nick, all-time
+/// scope (i.e. the requester's own per-year breakdown). Otherwise the first
+/// word is the nick and a following "all" (case-insensitive) selects all-time.
+/// A missing nick means "default to whoever asked" — callers fill that in.
+pub fn parse_stat_args<'a>(mut words: impl Iterator<Item = &'a str>) -> (Option<&'a str>, bool) {
+    match words.next() {
+        None => (None, false),
+        Some(first) if first.eq_ignore_ascii_case("all") => (None, true),
+        Some(nick) => {
+            let all = words.next().is_some_and(|w| w.eq_ignore_ascii_case("all"));
+            (Some(nick), all)
+        }
+    }
+}
+
 /// Render a leaderboard as a numbered list. `header` describes the scope.
 pub fn format_leaderboard(header: &str, entries: &[LeaderEntry]) -> String {
     if entries.is_empty() {
@@ -160,13 +176,15 @@ pub fn format_nick_stats(s: &NickStats) -> String {
     )
 }
 
-/// Build the `!stat` / `/stat` reply for a canonical nick. `all` selects the
-/// per-year breakdown; otherwise the current-year-primary summary. Shared by
-/// both bots so the wording stays identical.
-pub async fn stat_reply(pool: &sqlx::SqlitePool, canon: &str, all: bool) -> String {
+/// Build the `!stat` / `/stat` reply. `canon` is the DB lookup key; `display` is
+/// the name shown in the reply (usually the same string, but a Telegram user's
+/// own unlinked lookup shows their Telegram display name instead of `tg:<id>`).
+/// `all` selects the per-year breakdown; otherwise the current-year-primary
+/// summary. Shared by both bots so the wording stays identical.
+pub async fn stat_reply(pool: &sqlx::SqlitePool, canon: &str, display: &str, all: bool) -> String {
     if all {
         match crate::db::nick_yearly(pool, canon).await {
-            Ok(yearly) => format_nick_yearly(canon, &yearly),
+            Ok(yearly) => format_nick_yearly(display, &yearly),
             Err(e) => {
                 tracing::error!(error = %e, "nick_yearly failed");
                 "Tilaston haku epäonnistui.".to_string()
@@ -174,8 +192,11 @@ pub async fn stat_reply(pool: &sqlx::SqlitePool, canon: &str, all: bool) -> Stri
         }
     } else {
         match crate::db::nick_stats(pool, canon).await {
-            Ok(Some(stats)) => format_nick_stats(&stats),
-            Ok(None) => format!("{canon}: ei yhtään krappea."),
+            Ok(Some(mut stats)) => {
+                stats.name = display.to_string();
+                format_nick_stats(&stats)
+            }
+            Ok(None) => format!("{display}: ei yhtään krappea."),
             Err(e) => {
                 tracing::error!(error = %e, "nick_stats failed");
                 "Tilaston haku epäonnistui.".to_string()
@@ -207,7 +228,27 @@ pub fn scope_header(scope: Scope) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::canonical_irc_nick;
+    use super::{canonical_irc_nick, parse_stat_args};
+
+    #[test]
+    fn parses_stat_args() {
+        assert_eq!(parse_stat_args("".split_whitespace()), (None, false));
+        assert_eq!(parse_stat_args("all".split_whitespace()), (None, true));
+        assert_eq!(parse_stat_args("ALL".split_whitespace()), (None, true));
+        assert_eq!(parse_stat_args("helge".split_whitespace()), (Some("helge"), false));
+        assert_eq!(
+            parse_stat_args("helge all".split_whitespace()),
+            (Some("helge"), true)
+        );
+        assert_eq!(
+            parse_stat_args("helge ALL".split_whitespace()),
+            (Some("helge"), true)
+        );
+        assert_eq!(
+            parse_stat_args("helge nope".split_whitespace()),
+            (Some("helge"), false)
+        );
+    }
 
     #[test]
     fn canonicalizes_alt_nicks() {

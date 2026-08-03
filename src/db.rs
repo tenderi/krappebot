@@ -121,7 +121,7 @@ async fn count_for(pool: &SqlitePool, platform: &str, user_key: &str) -> Result<
 }
 
 /// Compute the canonical key for a (platform, user_key) pair, honoring /combine links.
-async fn canonical_key(pool: &SqlitePool, platform: &str, user_key: &str) -> Result<String> {
+pub async fn canonical_key(pool: &SqlitePool, platform: &str, user_key: &str) -> Result<String> {
     if platform == PLATFORM_TELEGRAM {
         if let Some(row) = sqlx::query("SELECT irc_nick FROM links WHERE telegram_id = ?")
             .bind(user_key)

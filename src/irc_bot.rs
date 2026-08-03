@@ -135,17 +135,12 @@ async fn handle_command(
             }
         }
 
-        "!stat" => match parts.next() {
-            None => {
-                let _ = client.send_privmsg(channel, "Käyttö: !stat <nick> [all]");
-            }
-            Some(arg) => {
-                let canon = core::canonical_irc_nick(arg);
-                let all = parts.next().is_some_and(|a| a.eq_ignore_ascii_case("all"));
-                let reply = core::stat_reply(pool, &canon, all).await;
-                let _ = client.send_privmsg(channel, reply);
-            }
-        },
+        "!stat" => {
+            let (nick_arg, all) = core::parse_stat_args(parts);
+            let canon = core::canonical_irc_nick(nick_arg.unwrap_or(nick));
+            let reply = core::stat_reply(pool, &canon, &canon, all).await;
+            let _ = client.send_privmsg(channel, reply);
+        }
 
         _ => {}
     }
