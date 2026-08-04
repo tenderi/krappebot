@@ -16,7 +16,11 @@ concurrent async tasks sharing a single SQLite database.
 | `!stat [nick] all` / `/stat [nick] all` | nick's per-year breakdown; omit the nick for your own | same |
 | `!kalja` / `/kalja` | "Cheers!" in a random language | "Cheers!" in a random language |
 | `!nousuun` / `/nousuun` | encouraging words for the hungover | encouraging words for the hungover |
-| — | — | `/combine <irc nick>` — tie your Telegram account to an IRC nick so the counts merge |
+| `!combine <nick>` | merges `<nick>`'s krappe into yours | `/combine <nick>` — ties your Telegram account (and any nick already merged into it) to an IRC nick so the counts merge |
+
+Both `!combine` and `/combine` are repeatable: running them again with another nick adds
+it to the same identity rather than replacing the link, so someone who used several IRC
+nicks over the years can fold them all together.
 
 ## How identities work
 
@@ -26,7 +30,10 @@ on the leaderboard. Without `/combine`, IRC and Telegram totals stay separate.
 
 Alt-nicks are merged automatically: a nick is canonicalized by lowercasing, dropping any
 `|`/`[` away-suffix, and stripping trailing reconnect markers (`_ - \``), so `Kukakumma_`
-and `kukakumma` count as one person.
+and `kukakumma` count as one person. This only catches spelling variants of the *same*
+nick, though — someone who genuinely changed nicks (e.g. `Veli-V` → `Veli`) needs an
+explicit `!combine`/`/combine` to fold the old one in, since nothing else can tell those
+apart from two different people.
 
 ## Once per day
 
@@ -105,7 +112,8 @@ src/
   irc_bot.rs       irc crate client + MODE handling
   bin/import.rs    one-off historical import (archive + log)
 migrations/
-  0001_init.sql    events + links tables
+  0001_init.sql       events + links tables
+  0002_nick_aliases.sql  manual multi-nick merges (!combine / repeated /combine)
 history/
   <year>.txt       krappe.fi/history archive, one file per year
 ```

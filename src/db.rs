@@ -1,5 +1,7 @@
 //! SQLite storage layer: recording krappe events, building the leaderboard,
-//! and linking a Telegram user to an IRC nick (`/combine`).
+//! linking a Telegram user to an IRC nick (`/combine`), and manually merging
+//! extra nicks into an identity (`nick_aliases`, via repeated `/combine` or
+//! IRC's `!combine`).
 //!
 //! Uses the runtime `sqlx::query` API (not the `query!` macro) so no live
 //! database is needed at compile time.
@@ -12,6 +14,20 @@ use std::str::FromStr;
 
 pub const PLATFORM_IRC: &str = "irc";
 pub const PLATFORM_TELEGRAM: &str = "telegram";
+
+// Canonical-identity expression and join, shared by every query that groups
+// events by "person". The inner COALESCE resolves /combine's Telegram<->IRC
+// link; the outer one wraps that with a resolution pass through nick_aliases
+// (manual multi-nick merges), so a nick that's been folded into another one
+// always counts under its target everywhere — leaderboard, !stat/!top, and
+// !krappe's own running total alike.
+const CANON_EXPR: &str = "COALESCE(
+    (SELECT a.canonical_nick FROM nick_aliases a WHERE a.alias_nick =
+        COALESCE(l.irc_nick, CASE WHEN e.platform = 'telegram' THEN 'tg:' || e.user_key ELSE e.user_key END)),
+    COALESCE(l.irc_nick, CASE WHEN e.platform = 'telegram' THEN 'tg:' || e.user_key ELSE e.user_key END)
+)";
+const CANON_JOIN: &str =
+    "FROM events e LEFT JOIN links l ON e.platform = 'telegram' AND e.user_key = l.telegram_id";
 
 /// Scope for the leaderboard.
 #[derive(Clone, Copy, Debug)]
@@ -105,15 +121,11 @@ pub async fn record_krappe_daily(
 async fn count_for(pool: &SqlitePool, platform: &str, user_key: &str) -> Result<i64> {
     // Resolve this event's canonical key, then count everything sharing it.
     let canon = canonical_key(pool, platform, user_key).await?;
-    let row = sqlx::query(
-        "SELECT COUNT(*) AS c FROM events e
-         LEFT JOIN links l
-           ON e.platform = 'telegram' AND e.user_key = l.telegram_id
-         WHERE COALESCE(
-                 l.irc_nick,
-                 CASE WHEN e.platform = 'telegram' THEN 'tg:' || e.user_key ELSE e.user_key END
-               ) = ?",
-    )
+    // Safe: only the static CANON_EXPR/CANON_JOIN constants are interpolated into the
+    // SQL text; the caller-supplied `canon` goes through the bind below.
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT COUNT(*) AS c {CANON_JOIN} WHERE {CANON_EXPR} = ?"
+    )))
     .bind(&canon)
     .fetch_one(pool)
     .await?;
@@ -122,17 +134,28 @@ async fn count_for(pool: &SqlitePool, platform: &str, user_key: &str) -> Result<
 
 /// Compute the canonical key for a (platform, user_key) pair, honoring /combine links.
 pub async fn canonical_key(pool: &SqlitePool, platform: &str, user_key: &str) -> Result<String> {
-    if platform == PLATFORM_TELEGRAM {
-        if let Some(row) = sqlx::query("SELECT irc_nick FROM links WHERE telegram_id = ?")
+    let base = if platform == PLATFORM_TELEGRAM {
+        match sqlx::query("SELECT irc_nick FROM links WHERE telegram_id = ?")
             .bind(user_key)
             .fetch_optional(pool)
             .await?
         {
-            return Ok(row.get::<String, _>("irc_nick"));
+            Some(row) => row.get::<String, _>("irc_nick"),
+            None => format!("tg:{user_key}"),
         }
-        return Ok(format!("tg:{user_key}"));
+    } else {
+        user_key.to_string()
+    };
+
+    // A manually merged nick (!combine / a repeated /combine) resolves to its target.
+    match sqlx::query("SELECT canonical_nick FROM nick_aliases WHERE alias_nick = ?")
+        .bind(&base)
+        .fetch_optional(pool)
+        .await?
+    {
+        Some(row) => Ok(row.get::<String, _>("canonical_nick")),
+        None => Ok(base),
     }
-    Ok(user_key.to_string())
 }
 
 /// Build the leaderboard. Identities are merged by canonical key; for each we take
@@ -145,30 +168,21 @@ pub async fn leaderboard(pool: &SqlitePool, scope: Scope, limit: i64) -> Result<
 
     // Window functions resolve, per canonical key, the total count and the
     // display_name from the most recent event (rn = 1).
-    let rows = sqlx::query(
+    // Safe: only the static CANON_EXPR/CANON_JOIN constants are interpolated into the
+    // SQL text; `since`/`limit` go through binds below.
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "SELECT canon, display_name, cnt FROM (
             SELECT
-                COALESCE(
-                    l.irc_nick,
-                    CASE WHEN e.platform = 'telegram' THEN 'tg:' || e.user_key ELSE e.user_key END
-                ) AS canon,
+                {CANON_EXPR} AS canon,
                 e.display_name AS display_name,
-                COUNT(*)     OVER (PARTITION BY COALESCE(
-                    l.irc_nick,
-                    CASE WHEN e.platform = 'telegram' THEN 'tg:' || e.user_key ELSE e.user_key END
-                )) AS cnt,
-                ROW_NUMBER() OVER (PARTITION BY COALESCE(
-                    l.irc_nick,
-                    CASE WHEN e.platform = 'telegram' THEN 'tg:' || e.user_key ELSE e.user_key END
-                ) ORDER BY e.created_at DESC) AS rn
-            FROM events e
-            LEFT JOIN links l
-              ON e.platform = 'telegram' AND e.user_key = l.telegram_id
+                COUNT(*)     OVER (PARTITION BY {CANON_EXPR}) AS cnt,
+                ROW_NUMBER() OVER (PARTITION BY {CANON_EXPR} ORDER BY e.created_at DESC) AS rn
+            {CANON_JOIN}
             WHERE (?1 IS NULL OR e.created_at >= ?1)
         ) WHERE rn = 1
         ORDER BY cnt DESC, canon ASC
-        LIMIT ?2",
-    )
+        LIMIT ?2"
+    )))
     .bind(since)
     .bind(limit)
     .fetch_all(pool)
@@ -208,13 +222,6 @@ pub struct NickStats {
     pub year: ScopeStats,
     pub all: ScopeStats,
 }
-
-// Canonical-identity expression and join, shared by the stats queries (matches
-// the grouping used in `leaderboard`).
-const CANON_EXPR: &str =
-    "COALESCE(l.irc_nick, CASE WHEN e.platform = 'telegram' THEN 'tg:' || e.user_key ELSE e.user_key END)";
-const CANON_JOIN: &str =
-    "FROM events e LEFT JOIN links l ON e.platform = 'telegram' AND e.user_key = l.telegram_id";
 
 /// Count, rank and field size for `canon` within a scope. `since` is an ISO
 /// timestamp lower bound, or "" for all-time. Rank counts identities with a
@@ -288,7 +295,9 @@ pub async fn nick_yearly(pool: &SqlitePool, canon: &str) -> Result<Vec<(i32, i64
         .collect())
 }
 
-/// Tie a Telegram user id to an IRC nick (last writer wins).
+/// Tie a Telegram user id to an IRC nick. Used for a Telegram account's first
+/// `/combine`, which establishes its primary identity; later `/combine` calls
+/// go through [`add_nick_alias`] instead so they add rather than replace it.
 pub async fn link_combine(pool: &SqlitePool, telegram_id: &str, irc_nick: &str) -> Result<()> {
     let now = Utc::now().to_rfc3339();
     let nick = irc_nick.to_lowercase();
@@ -302,6 +311,70 @@ pub async fn link_combine(pool: &SqlitePool, telegram_id: &str, irc_nick: &str) 
     .bind(&now)
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+/// The IRC nick a Telegram user already `/combine`d to, if any.
+pub async fn telegram_link(pool: &SqlitePool, telegram_id: &str) -> Result<Option<String>> {
+    let row = sqlx::query("SELECT irc_nick FROM links WHERE telegram_id = ?")
+        .bind(telegram_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.map(|r| r.get::<String, _>("irc_nick")))
+}
+
+/// Manually fold `alias_nick`'s krappe into whatever `canonical_nick` resolves
+/// to (used by IRC's `!combine <nick>` and a second/third `/combine` on
+/// Telegram, where the first `/combine` already set up the primary link).
+/// Both are lowercased; a no-op if they're already the same identity.
+///
+/// Kept single-hop: `canonical_nick` is resolved through any existing alias
+/// first (so we always point straight at the ultimate target), and anything
+/// already aliased to `alias_nick` is re-pointed at that same target — no
+/// A -> B -> C chains to walk at query time.
+pub async fn add_nick_alias(pool: &SqlitePool, alias_nick: &str, canonical_nick: &str) -> Result<()> {
+    let alias = alias_nick.to_lowercase();
+    let mut target = canonical_nick.to_lowercase();
+
+    while let Some(row) = sqlx::query("SELECT canonical_nick FROM nick_aliases WHERE alias_nick = ?")
+        .bind(&target)
+        .fetch_optional(pool)
+        .await?
+    {
+        let next: String = row.get("canonical_nick");
+        if next == target {
+            break; // guard against a stray self-loop
+        }
+        target = next;
+    }
+
+    if alias == target {
+        return Ok(());
+    }
+
+    let now = Utc::now().to_rfc3339();
+    let mut tx = pool.begin().await?;
+
+    // Keep the table single-hop: anything already aliased to `alias` now
+    // points straight at `target` instead.
+    sqlx::query("UPDATE nick_aliases SET canonical_nick = ? WHERE canonical_nick = ?")
+        .bind(&target)
+        .bind(&alias)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query(
+        "INSERT INTO nick_aliases (alias_nick, canonical_nick, created_at) VALUES (?, ?, ?)
+         ON CONFLICT(alias_nick) DO UPDATE SET canonical_nick = excluded.canonical_nick,
+                                               created_at = excluded.created_at",
+    )
+    .bind(&alias)
+    .bind(&target)
+    .bind(&now)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
     Ok(())
 }
 
@@ -416,5 +489,54 @@ mod tests {
 
         assert_eq!(nick_yearly(&pool, "maska").await.unwrap(), vec![(2020, 3)]);
         assert!(nick_stats(&pool, "nobody").await.unwrap().is_none());
+    }
+
+    /// A nick_alias (e.g. from `!combine`) merges two IRC identities, matching
+    /// the real-world "Veli-V" -> "Veli" rename that motivated this feature.
+    #[tokio::test]
+    async fn nick_alias_merges_two_irc_identities() {
+        let pool = mem_pool().await;
+
+        record_krappe(&pool, PLATFORM_IRC, "veli-v", "Veli-V").await.unwrap();
+        record_krappe(&pool, PLATFORM_IRC, "veli", "Veli").await.unwrap();
+        record_krappe(&pool, PLATFORM_IRC, "veli", "Veli").await.unwrap();
+
+        let before = leaderboard(&pool, Scope::All, 10).await.unwrap();
+        assert_eq!(before.len(), 2, "unaliased nicks are separate rows");
+
+        add_nick_alias(&pool, "veli-v", "veli").await.unwrap();
+
+        let after = leaderboard(&pool, Scope::All, 10).await.unwrap();
+        assert_eq!(after.len(), 1, "aliased nicks collapse into one row");
+        assert_eq!(after[0].display, "veli");
+        assert_eq!(after[0].count, 3);
+
+        // A fresh krappe under the old nick still folds into the merged total.
+        let count = record_krappe(&pool, PLATFORM_IRC, "veli-v", "Veli-V").await.unwrap();
+        assert_eq!(count, 4);
+    }
+
+    /// Aliasing stays single-hop: merging C into B after B was already merged
+    /// into A re-points C straight at A instead of chaining C -> B -> A.
+    #[tokio::test]
+    async fn nick_alias_chains_resolve_to_one_hop() {
+        let pool = mem_pool().await;
+
+        record_krappe(&pool, PLATFORM_IRC, "a", "a").await.unwrap();
+        record_krappe(&pool, PLATFORM_IRC, "b", "b").await.unwrap();
+        record_krappe(&pool, PLATFORM_IRC, "c", "c").await.unwrap();
+
+        add_nick_alias(&pool, "b", "a").await.unwrap();
+        add_nick_alias(&pool, "c", "b").await.unwrap();
+
+        let row = sqlx::query("SELECT canonical_nick FROM nick_aliases WHERE alias_nick = 'c'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<String, _>("canonical_nick"), "a", "c should point straight at a, not b");
+
+        let board = leaderboard(&pool, Scope::All, 10).await.unwrap();
+        assert_eq!(board.len(), 1, "a, b, and c all collapse into one identity");
+        assert_eq!(board[0].count, 3);
     }
 }

@@ -1,6 +1,7 @@
 //! Telegram side, built on teloxide.
 //!
-//! Commands: /krappe, /naamat, /top [all], /combine <irc nick>.
+//! Commands: /krappe, /naamat, /top [all], /stat [nick] [all], /combine <irc nick>
+//! (repeatable — each call adds another nick to the account's identity).
 
 use crate::config::TelegramConfig;
 use crate::core;
@@ -25,7 +26,7 @@ enum Command {
     Kalja,
     #[command(description = "kannustusta krapulaiselle nousuhumalan tielle")]
     Nousuun,
-    #[command(description = "yhdistä Telegram-tilisi IRC-nimimerkkiin: /combine <nick>")]
+    #[command(description = "yhdistä IRC-nimimerkki tiliisi: /combine <nick> (voit ajaa monta kertaa)")]
     Combine(String),
 }
 
@@ -168,15 +169,27 @@ async fn answer(bot: Bot, msg: Message, cmd: Command, pool: SqlitePool) -> Respo
             } else {
                 // Store the same canonical form the IRC events use, so counts merge.
                 let canon = core::canonical_irc_nick(nick);
-                match db::link_combine(&pool, &user_key, &canon).await {
+                // First /combine sets up the primary link; later ones add the extra
+                // nick as an alias onto whatever the account already resolves to, so
+                // repeated /combine accumulates nicks instead of replacing the link.
+                let result = match db::telegram_link(&pool, &user_key).await {
+                    Ok(None) => db::link_combine(&pool, &user_key, &canon).await,
+                    Ok(Some(existing)) if existing == canon => Ok(()),
+                    Ok(Some(_)) => match db::canonical_key(&pool, PLATFORM_TELEGRAM, &user_key).await {
+                        Ok(current) => db::add_nick_alias(&pool, &canon, &current).await,
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(e),
+                };
+                match result {
                     Ok(()) => {
                         let text = format!(
-                            "{display} yhdistetty IRC-nimimerkkiin «{canon}». Krappet lasketaan nyt yhteen."
+                            "{display}: nick «{canon}» yhdistetty. Krappet lasketaan nyt yhteen."
                         );
                         bot.send_message(msg.chat.id, text).await?;
                     }
                     Err(e) => {
-                        tracing::error!(error = %e, "link_combine failed");
+                        tracing::error!(error = %e, "combine failed");
                         bot.send_message(msg.chat.id, "Yhdistäminen epäonnistui.")
                             .await?;
                     }
