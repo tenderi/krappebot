@@ -3,6 +3,12 @@
 //! Commands (must be sent in a channel): !krappe, !naamat, !top [all],
 //! !stat [nick] [all], !combine <nick>, !uncombine <nick>.
 //! !krappe grants the user +v; !naamat grants +o.
+//!
+//! All bot output uses NOTICE, not PRIVMSG: RFC 2812 §3.3.2 specifies that
+//! automatic replies must never be sent in response to a NOTICE, precisely so
+//! two bots (or a bot and a misconfigured client) can't loop replying to each
+//! other forever. Since every message this bot sends is an automated command
+//! reply, NOTICE is the correct choice everywhere here.
 
 use crate::config::IrcConfig;
 use crate::core;
@@ -89,49 +95,49 @@ async fn handle_command(
             match db::record_krappe_daily(pool, PLATFORM_IRC, &key, nick).await {
                 Ok(db::KrappeOutcome::Recorded(count)) => {
                     set_mode(client, channel, ChannelMode::Voice, nick);
-                    let _ = client.send_privmsg(
+                    let _ = client.send_notice(
                         channel,
                         format!("{nick} otti krappen! Yhteensä: {count}"),
                     );
                 }
                 Ok(db::KrappeOutcome::AlreadyToday(count)) => {
-                    let _ = client.send_privmsg(
+                    let _ = client.send_notice(
                         channel,
                         format!("{nick}: {} (Yhteensä: {count})", core::random_shame()),
                     );
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "record_krappe failed");
-                    let _ = client.send_privmsg(channel, "Krappen tallennus epäonnistui.");
+                    let _ = client.send_notice(channel, "Krappen tallennus epäonnistui.");
                 }
             }
         }
 
         "!naamat" => {
             set_mode(client, channel, ChannelMode::Oper, nick);
-            let _ = client.send_privmsg(channel, format!("{nick} on naamat, kunnollista!"));
+            let _ = client.send_notice(channel, format!("{nick} on naamat, kunnollista!"));
         }
 
         "!kalja" => {
-            let _ = client.send_privmsg(channel, core::random_cheers());
+            let _ = client.send_notice(channel, core::random_cheers());
         }
 
         "!nousuun" => {
-            let _ = client.send_privmsg(channel, core::random_nousuun());
+            let _ = client.send_notice(channel, core::random_nousuun());
         }
 
         "!top" => {
             let scope = core::parse_scope(parts.next().unwrap_or(""));
             match db::leaderboard(pool, scope, 20).await {
                 Ok(entries) => {
-                    // Single message: IRC can't put newlines in one PRIVMSG, so join inline.
+                    // Single message: IRC can't put newlines in one NOTICE, so join inline.
                     let text =
                         core::format_leaderboard_inline(&core::scope_header(scope), &entries);
-                    let _ = client.send_privmsg(channel, text);
+                    let _ = client.send_notice(channel, text);
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "leaderboard failed");
-                    let _ = client.send_privmsg(channel, "Tilaston haku epäonnistui.");
+                    let _ = client.send_notice(channel, "Tilaston haku epäonnistui.");
                 }
             }
         }
@@ -140,12 +146,12 @@ async fn handle_command(
             let (nick_arg, all) = core::parse_stat_args(parts);
             let canon = core::canonical_irc_nick(nick_arg.unwrap_or(nick));
             let reply = core::stat_reply(pool, &canon, &canon, all).await;
-            let _ = client.send_privmsg(channel, reply);
+            let _ = client.send_notice(channel, reply);
         }
 
         "!combine" => match parts.next() {
             None => {
-                let _ = client.send_privmsg(channel, "Käyttö: !combine <toinen nick>");
+                let _ = client.send_notice(channel, "Käyttö: !combine <toinen nick>");
             }
             Some(arg) => {
                 let other = core::canonical_irc_nick(arg);
@@ -156,7 +162,7 @@ async fn handle_command(
                 };
                 match result {
                     Ok(()) => {
-                        let _ = client.send_privmsg(
+                        let _ = client.send_notice(
                             channel,
                             format!(
                                 "{nick}: nick «{other}» yhdistetty sinuun. Krappet lasketaan nyt yhteen."
@@ -165,7 +171,7 @@ async fn handle_command(
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "add_nick_alias failed");
-                        let _ = client.send_privmsg(channel, "Yhdistäminen epäonnistui.");
+                        let _ = client.send_notice(channel, "Yhdistäminen epäonnistui.");
                     }
                 }
             }
@@ -173,24 +179,24 @@ async fn handle_command(
 
         "!uncombine" => match parts.next() {
             None => {
-                let _ = client.send_privmsg(channel, "Käyttö: !uncombine <nick>");
+                let _ = client.send_notice(channel, "Käyttö: !uncombine <nick>");
             }
             Some(arg) => {
                 let other = core::canonical_irc_nick(arg);
                 match db::remove_nick_alias(pool, &other).await {
                     Ok(true) => {
-                        let _ = client.send_privmsg(
+                        let _ = client.send_notice(
                             channel,
                             format!("Nick «{other}» erotettu, lasketaan taas erikseen."),
                         );
                     }
                     Ok(false) => {
                         let _ = client
-                            .send_privmsg(channel, format!("Nick «{other}» ei ollut yhdistetty."));
+                            .send_notice(channel, format!("Nick «{other}» ei ollut yhdistetty."));
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "remove_nick_alias failed");
-                        let _ = client.send_privmsg(channel, "Erottaminen epäonnistui.");
+                        let _ = client.send_notice(channel, "Erottaminen epäonnistui.");
                     }
                 }
             }
