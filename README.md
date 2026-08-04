@@ -33,18 +33,30 @@ and `kukakumma` count as one person.
 `!krappe` / `/krappe` counts **at most once per person per calendar day** — a hangover is a
 hangover. A second attempt the same day is not counted and earns a gentle shaming reply.
 
-## Importing historical IRC logs
+## Importing historical IRC data
 
-To backfill stats from an irssi channel log, point the importer at it:
+IRC history comes from two sources, combined by `src/bin/import.rs`:
+
+- `history/<year>.txt` — the yearly leaderboard archive from
+  [krappe.fi/history](https://www.krappe.fi/history/) (`<count> <nick>` per line), committed
+  to the repo since it's small and public. This is the source of truth for any year it has a
+  file for.
+- `#tty-krappe.log` — the irssi channel log, used only to fill in years the archive doesn't
+  cover (currently the ongoing year(s) since the archive was retired). It parses `!krappe`
+  lines (including the log owner's own nick-less `>` lines, attributed to `tenderi`) and
+  applies the same canonicalization and once-per-day rule the live bot uses. Gitignored —
+  never commit it.
+
+Run it with:
 
 ```bash
-DATABASE_URL=sqlite://krappe.db cargo run --release --bin import -- "#tty-krappe.log"
+DATABASE_URL=sqlite://krappe.db cargo run --release --bin import -- "#tty-krappe.log" history
 ```
 
-It parses `!krappe` lines (including the log owner's own nick-less `>` lines, attributed to
-`tenderi`), applies the same canonicalization and once-per-day rule, and **replaces** all
-existing IRC events with what it parsed. Telegram events are left untouched. Stop the bot
-first so the database isn't being written concurrently. Logs are gitignored — never commit them.
+Both arguments are optional and default to `#tty-krappe.log` and `history`. It's idempotent:
+it **replaces** all existing IRC events with what it parsed from both sources. Telegram
+events are left untouched. Stop the bot first so the database isn't being written
+concurrently.
 
 ## Setup
 
@@ -91,6 +103,9 @@ src/
   core.rs          shared formatting, scope parsing, naamat titles
   telegram_bot.rs  teloxide commands
   irc_bot.rs       irc crate client + MODE handling
+  bin/import.rs    one-off historical import (archive + log)
 migrations/
   0001_init.sql    events + links tables
+history/
+  <year>.txt       krappe.fi/history archive, one file per year
 ```

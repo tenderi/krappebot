@@ -1,10 +1,17 @@
-//! One-off importer: rebuild historical IRC krappe events from an irssi channel log.
+//! One-off importer: rebuild historical IRC krappe events from two sources —
+//! the krappe.fi/history/ yearly archive (authoritative wherever it has a
+//! year file) and the irssi channel log (used only for years the archive
+//! doesn't cover, i.e. the current year(s) since the archive was retired).
 //!
-//! Usage:  cargo run --release --bin import -- [path-to-log]
-//! Default log path is "#tty-krappe.log"; DB comes from DATABASE_URL (default
-//! sqlite://krappe.db), same as the bot.
+//! Usage:  cargo run --release --bin import -- [path-to-log] [archive-dir]
+//! Defaults: log "#tty-krappe.log", archive dir "history" (containing files
+//! like "2010.txt".."2024.txt", one per year, each line "<count> <nick>").
+//! DB comes from DATABASE_URL (default sqlite://krappe.db), same as the bot.
 //!
-//! Rules (matching the live bot):
+//! Source-of-truth rule: a year present in the archive dir is taken entirely
+//! from the archive (the archive's own counting rules — not necessarily the
+//! same once-per-day dedup the bot uses — apply for that year); any other
+//! year is parsed from the log with the live bot's exact rules:
 //!   * a krappe is a message whose first whitespace token is exactly "!krappe";
 //!   * the log owner's own messages are logged as "HH:MM > ..." with no nick, and
 //!     are attributed to OWNER ("tenderi");
@@ -12,7 +19,7 @@
 //!   * at most one krappe per (canonical nick, day) is counted.
 //!
 //! It is idempotent: it deletes all existing `platform = 'irc'` events and
-//! re-inserts everything parsed from the log. Telegram events are untouched.
+//! re-inserts everything parsed from both sources. Telegram events are untouched.
 
 use anyhow::{Context, Result};
 use krappebot::core::canonical_irc_nick;
@@ -87,6 +94,65 @@ fn parse_line(line: &str) -> Option<(u32, u32, String, &str)> {
     }
 }
 
+/// Parse one archive year file: lines "<count> <nick>" (whitespace-separated,
+/// anything else — like krappe.fi's odd header line on 2010.txt — is skipped).
+/// Emits `count` events per nick, timestamped mid-year since the archive has
+/// no per-event dates; only the year is ever queried, so the exact day/time
+/// within it doesn't matter.
+fn parse_archive_year(path: &std::path::Path, year: i32) -> Result<Vec<Event>> {
+    let file = File::open(path).with_context(|| format!("opening archive file {path:?}"))?;
+    let reader = BufReader::new(file);
+    let timestamp = format!("{year:04}-07-02T12:00:00Z");
+
+    let mut events = Vec::new();
+    for line in reader.lines() {
+        let line = line?;
+        let mut words = line.split_whitespace();
+        let (Some(count_tok), Some(nick), None) = (words.next(), words.next(), words.next())
+        else {
+            continue; // not a "<count> <nick>" line (e.g. the 2010.txt header)
+        };
+        let Ok(count) = count_tok.parse::<u32>() else { continue };
+        let key = canonical_irc_nick(nick);
+        for _ in 0..count {
+            events.push(Event {
+                timestamp: timestamp.clone(),
+                user_key: key.clone(),
+                display: nick.to_string(),
+            });
+        }
+    }
+    Ok(events)
+}
+
+/// Read `dir` for files named "<year>.txt" and parse each into events. Returns
+/// the events plus the set of years the archive covers (so the log parser can
+/// skip them). Missing directory -> no archive years, log-only (unchanged
+/// behavior).
+fn load_archive(dir: &std::path::Path) -> Result<(Vec<Event>, HashSet<i32>)> {
+    let mut events = Vec::new();
+    let mut years = HashSet::new();
+
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((events, years)),
+        Err(e) => return Err(e).with_context(|| format!("reading archive dir {dir:?}")),
+    };
+    for entry in entries {
+        let path = entry?.path();
+        let Some(year) = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.parse::<i32>().ok())
+        else {
+            continue; // not a "<year>.txt" file
+        };
+        events.extend(parse_archive_year(&path, year)?);
+        years.insert(year);
+    }
+    Ok((events, years))
+}
+
 async fn connect(database_url: &str) -> Result<sqlx::SqlitePool> {
     let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
     let pool = SqlitePoolOptions::new()
@@ -102,17 +168,25 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
 
     let log_path = std::env::args().nth(1).unwrap_or_else(|| "#tty-krappe.log".to_string());
+    let archive_dir = std::env::args().nth(2).unwrap_or_else(|| "history".to_string());
     let database_url =
         std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://krappe.db".to_string());
+
+    let (mut events, archive_years) = load_archive(std::path::Path::new(&archive_dir))?;
+    let archive_count = events.len();
+    println!(
+        "{archive_count} events from {} archive year(s) in {archive_dir}",
+        archive_years.len()
+    );
 
     let file = File::open(&log_path).with_context(|| format!("opening log {log_path}"))?;
     let reader = BufReader::new(file);
 
     let mut current: Option<(i32, u32, u32)> = None;
-    let mut events: Vec<Event> = Vec::new();
+    let mut log_events: Vec<Event> = Vec::new();
     let mut seen: HashSet<(String, (i32, u32, u32))> = HashSet::new(); // (canonical nick, day)
     let mut lines = 0u64;
-    let mut raw_hits = 0u64; // total !krappe invocations before daily dedup
+    let mut raw_hits = 0u64; // total !krappe invocations before daily dedup, in non-archive years
 
     for line in reader.lines() {
         let line = line?;
@@ -138,6 +212,11 @@ async fn main() -> Result<()> {
             continue;
         }
         let Some(day) = current else { continue };
+        // The archive is the source of truth for any year it covers; only use
+        // the log to fill in years the archive doesn't have.
+        if archive_years.contains(&day.0) {
+            continue;
+        }
         raw_hits += 1;
 
         let key = canonical_irc_nick(&nick);
@@ -146,14 +225,24 @@ async fn main() -> Result<()> {
             continue;
         }
         let (y, mo, d) = day;
-        events.push(Event {
+        log_events.push(Event {
             timestamp: format!("{y:04}-{mo:02}-{d:02}T{hh:02}:{mm:02}:00Z"),
             user_key: key,
             display: nick,
         });
     }
 
-    // Summary.
+    println!("Scanned {lines} lines from {log_path}");
+    println!("{raw_hits} raw !krappe invocations outside archive years");
+    println!(
+        "{} counted after once-per-day dedup, from {} people",
+        log_events.len(),
+        log_events.iter().map(|e| &e.user_key).collect::<HashSet<_>>().len()
+    );
+
+    events.extend(log_events);
+
+    // Overall summary across both sources.
     let mut by_nick: HashMap<String, u64> = HashMap::new();
     for e in &events {
         *by_nick.entry(e.user_key.clone()).or_insert(0) += 1;
@@ -164,10 +253,8 @@ async fn main() -> Result<()> {
     let first = events.iter().map(|e| &e.timestamp).min().cloned().unwrap_or_default();
     let last = events.iter().map(|e| &e.timestamp).max().cloned().unwrap_or_default();
 
-    println!("Scanned {lines} lines from {log_path}");
-    println!("{raw_hits} raw !krappe invocations");
     println!(
-        "{} counted after once-per-day dedup, from {} people ({}..{})",
+        "Combined: {} events from {} people ({}..{})",
         events.len(),
         by_nick.len(),
         first,
@@ -199,8 +286,9 @@ async fn main() -> Result<()> {
     tx.commit().await?;
 
     println!(
-        "Done: deleted {deleted} old IRC events, inserted {} into {database_url}",
-        events.len()
+        "Done: deleted {deleted} old IRC events, inserted {} ({archive_count} archive + {} log) into {database_url}",
+        events.len(),
+        events.len() - archive_count
     );
     Ok(())
 }
