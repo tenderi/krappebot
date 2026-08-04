@@ -17,10 +17,12 @@ concurrent async tasks sharing a single SQLite database.
 | `!kalja` / `/kalja` | "Cheers!" in a random language | "Cheers!" in a random language |
 | `!nousuun` / `/nousuun` | encouraging words for the hungover | encouraging words for the hungover |
 | `!combine <nick>` | merges `<nick>`'s krappe into yours | `/combine <nick>` — ties your Telegram account (and any nick already merged into it) to an IRC nick so the counts merge |
+| `!uncombine <nick>` | undoes a merge, splitting `<nick>` back out | `/uncombine <nick>` — same, and also undoes your account's original `/combine` link if `<nick>` was that |
 
 Both `!combine` and `/combine` are repeatable: running them again with another nick adds
 it to the same identity rather than replacing the link, so someone who used several IRC
-nicks over the years can fold them all together.
+nicks over the years can fold them all together. `!uncombine`/`/uncombine` reverses an
+accidental merge.
 
 ## How identities work
 

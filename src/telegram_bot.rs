@@ -1,7 +1,8 @@
 //! Telegram side, built on teloxide.
 //!
 //! Commands: /krappe, /naamat, /top [all], /stat [nick] [all], /combine <irc nick>
-//! (repeatable — each call adds another nick to the account's identity).
+//! (repeatable — each call adds another nick to the account's identity),
+//! /uncombine <irc nick> (undoes one).
 
 use crate::config::TelegramConfig;
 use crate::core;
@@ -28,6 +29,8 @@ enum Command {
     Nousuun,
     #[command(description = "yhdistä IRC-nimimerkki tiliisi: /combine <nick> (voit ajaa monta kertaa)")]
     Combine(String),
+    #[command(description = "peru yhdistäminen: /uncombine <nick>")]
+    Uncombine(String),
 }
 
 /// Entry point: run the Telegram dispatcher until the process stops.
@@ -192,6 +195,49 @@ async fn answer(bot: Bot, msg: Message, cmd: Command, pool: SqlitePool) -> Respo
                         tracing::error!(error = %e, "combine failed");
                         bot.send_message(msg.chat.id, "Yhdistäminen epäonnistui.")
                             .await?;
+                    }
+                }
+            }
+        }
+
+        Command::Uncombine(arg) => {
+            let nick = arg.trim();
+            if nick.is_empty() || nick.contains(char::is_whitespace) {
+                bot.send_message(msg.chat.id, "Käyttö: /uncombine <nick>").await?;
+            } else {
+                let canon = core::canonical_irc_nick(nick);
+                match db::remove_nick_alias(&pool, &canon).await {
+                    Ok(true) => {
+                        let text = format!("Nick «{canon}» erotettu, lasketaan taas erikseen.");
+                        bot.send_message(msg.chat.id, text).await?;
+                    }
+                    Ok(false) => {
+                        // Not a manually merged nick -- maybe it's the primary link itself.
+                        match db::telegram_link(&pool, &user_key).await {
+                            Ok(Some(primary)) if primary == canon => {
+                                match db::unlink_telegram(&pool, &user_key).await {
+                                    Ok(_) => {
+                                        let text = format!(
+                                            "{display}: tili irrotettu nimimerkistä «{canon}»."
+                                        );
+                                        bot.send_message(msg.chat.id, text).await?;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(error = %e, "unlink_telegram failed");
+                                        bot.send_message(msg.chat.id, "Erottaminen epäonnistui.")
+                                            .await?;
+                                    }
+                                }
+                            }
+                            _ => {
+                                let text = format!("Nick «{canon}» ei ollut yhdistetty.");
+                                bot.send_message(msg.chat.id, text).await?;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "remove_nick_alias failed");
+                        bot.send_message(msg.chat.id, "Erottaminen epäonnistui.").await?;
                     }
                 }
             }

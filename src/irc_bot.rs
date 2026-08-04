@@ -1,7 +1,7 @@
 //! IRC side, built on the `irc` crate.
 //!
 //! Commands (must be sent in a channel): !krappe, !naamat, !top [all],
-//! !stat [nick] [all], !combine <nick>.
+//! !stat [nick] [all], !combine <nick>, !uncombine <nick>.
 //! !krappe grants the user +v; !naamat grants +o.
 
 use crate::config::IrcConfig;
@@ -166,6 +166,31 @@ async fn handle_command(
                     Err(e) => {
                         tracing::error!(error = %e, "add_nick_alias failed");
                         let _ = client.send_privmsg(channel, "Yhdistäminen epäonnistui.");
+                    }
+                }
+            }
+        },
+
+        "!uncombine" => match parts.next() {
+            None => {
+                let _ = client.send_privmsg(channel, "Käyttö: !uncombine <nick>");
+            }
+            Some(arg) => {
+                let other = core::canonical_irc_nick(arg);
+                match db::remove_nick_alias(pool, &other).await {
+                    Ok(true) => {
+                        let _ = client.send_privmsg(
+                            channel,
+                            format!("Nick «{other}» erotettu, lasketaan taas erikseen."),
+                        );
+                    }
+                    Ok(false) => {
+                        let _ = client
+                            .send_privmsg(channel, format!("Nick «{other}» ei ollut yhdistetty."));
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "remove_nick_alias failed");
+                        let _ = client.send_privmsg(channel, "Erottaminen epäonnistui.");
                     }
                 }
             }

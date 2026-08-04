@@ -378,6 +378,29 @@ pub async fn add_nick_alias(pool: &SqlitePool, alias_nick: &str, canonical_nick:
     Ok(())
 }
 
+/// Undo a manual [`add_nick_alias`] merge (`!uncombine` / `/uncombine`).
+/// Returns whether `alias_nick` actually had an alias to remove.
+pub async fn remove_nick_alias(pool: &SqlitePool, alias_nick: &str) -> Result<bool> {
+    let alias = alias_nick.to_lowercase();
+    let result = sqlx::query("DELETE FROM nick_aliases WHERE alias_nick = ?")
+        .bind(&alias)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Undo a Telegram account's primary [`link_combine`] link. Any nicks
+/// separately merged onto it via [`add_nick_alias`] are left alone — they
+/// just keep counting as a plain IRC identity, no longer tied to Telegram.
+/// Returns whether `telegram_id` actually had a link to remove.
+pub async fn unlink_telegram(pool: &SqlitePool, telegram_id: &str) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM links WHERE telegram_id = ?")
+        .bind(telegram_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,6 +537,44 @@ mod tests {
         // A fresh krappe under the old nick still folds into the merged total.
         let count = record_krappe(&pool, PLATFORM_IRC, "veli-v", "Veli-V").await.unwrap();
         assert_eq!(count, 4);
+    }
+
+    /// `!uncombine`/`/uncombine` reverses an accidental merge.
+    #[tokio::test]
+    async fn remove_nick_alias_undoes_a_merge() {
+        let pool = mem_pool().await;
+
+        record_krappe(&pool, PLATFORM_IRC, "veli-v", "Veli-V").await.unwrap();
+        record_krappe(&pool, PLATFORM_IRC, "veli", "Veli").await.unwrap();
+        add_nick_alias(&pool, "veli-v", "veli").await.unwrap();
+        assert_eq!(leaderboard(&pool, Scope::All, 10).await.unwrap().len(), 1);
+
+        let removed = remove_nick_alias(&pool, "veli-v").await.unwrap();
+        assert!(removed, "an alias existed and was removed");
+
+        let board = leaderboard(&pool, Scope::All, 10).await.unwrap();
+        assert_eq!(board.len(), 2, "nicks are independent again after uncombine");
+
+        let removed_again = remove_nick_alias(&pool, "veli-v").await.unwrap();
+        assert!(!removed_again, "nothing left to remove the second time");
+    }
+
+    /// `/uncombine` on a Telegram account's primary link removes it, leaving
+    /// the IRC identity to stand on its own.
+    #[tokio::test]
+    async fn unlink_telegram_removes_primary_link() {
+        let pool = mem_pool().await;
+
+        record_krappe(&pool, PLATFORM_IRC, "helge", "helge").await.unwrap();
+        link_combine(&pool, "42", "helge").await.unwrap();
+        assert_eq!(telegram_link(&pool, "42").await.unwrap(), Some("helge".to_string()));
+
+        let removed = unlink_telegram(&pool, "42").await.unwrap();
+        assert!(removed);
+        assert_eq!(telegram_link(&pool, "42").await.unwrap(), None);
+
+        // The IRC identity itself is untouched.
+        assert_eq!(nick_stats(&pool, "helge").await.unwrap().unwrap().all.count, 1);
     }
 
     /// Aliasing stays single-hop: merging C into B after B was already merged
