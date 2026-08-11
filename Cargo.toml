@@ -27,6 +27,11 @@ sqlx = { version = "0.9", default-features = false, features = [
     "macros",
 ] }
 
+# Direct dependency only so a crypto provider can be installed explicitly at
+# startup: teloxide pulls rustls with aws-lc-rs and the irc crate pulls it with
+# ring, and with both enabled rustls refuses to pick one and panics on first use.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
 chrono = "0.4"
 rand = "0.8"
 anyhow = "1"

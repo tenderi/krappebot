@@ -17,6 +17,18 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    // teloxide pulls rustls with aws-lc-rs, the irc crate pulls it with ring, and
+    // cargo unifies them into one rustls that can no longer pick a provider on
+    // its own — so it panics the first time TLS is used. Whichever task happened
+    // to reach TLS first decided whether the process survived; install one here
+    // so it is decided the same way every time.
+    if rustls::crypto::ring::default_provider()
+        .install_default()
+        .is_err()
+    {
+        tracing::debug!("rustls crypto provider was already installed");
+    }
+
     let cfg = Config::from_env()?;
     let pool = db::init(&cfg.database_url).await?;
     tracing::info!(db = %cfg.database_url, "database ready");
@@ -33,24 +45,35 @@ async fn main() -> Result<()> {
     let tg_pool = pool.clone();
     let irc_pool = pool.clone();
 
+    // An unconfigured platform parks forever rather than returning, so it can't
+    // trip the select below and take the configured one down with it.
     let tg_task = tokio::spawn(async move {
-        if let Some(tg) = telegram {
-            if let Err(e) = telegram_bot::run(tg, tg_pool).await {
-                tracing::error!(error = %e, "telegram bot stopped");
-            }
+        match telegram {
+            Some(tg) => telegram_bot::run(tg, tg_pool).await,
+            None => std::future::pending().await,
         }
     });
 
     let irc_task = tokio::spawn(async move {
-        if let Some(irc) = irc {
-            if let Err(e) = irc_bot::run(irc, irc_pool).await {
-                tracing::error!(error = %e, "irc bot stopped");
-            }
+        match irc {
+            Some(irc) => irc_bot::run(irc, irc_pool).await,
+            None => std::future::pending().await,
         }
     });
 
-    // If either task ends (error or disconnect), let the process exit so a
-    // supervisor (systemd, docker restart) can restart it cleanly.
-    let _ = tokio::try_join!(tg_task, irc_task);
-    Ok(())
+    // Neither task is supposed to end. If one does, exit *non-zero* so systemd
+    // actually restarts us — returning Ok here is what let a boot-time DNS
+    // failure look like a clean shutdown and leave the bot dead until noticed.
+    tokio::select! {
+        r = tg_task => match r {
+            Ok(Ok(())) => anyhow::bail!("telegram bot stopped unexpectedly"),
+            Ok(Err(e)) => Err(e.context("telegram bot failed")),
+            Err(e) => anyhow::bail!("telegram task failed: {e}"),
+        },
+        r = irc_task => match r {
+            Ok(Ok(())) => anyhow::bail!("irc bot stopped unexpectedly"),
+            Ok(Err(e)) => Err(e.context("irc bot failed")),
+            Err(e) => anyhow::bail!("irc task failed: {e}"),
+        },
+    }
 }

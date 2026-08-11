@@ -33,10 +33,40 @@ enum Command {
     Uncombine(String),
 }
 
+/// Block until Telegram answers.
+///
+/// A user-manager service has no `network-online.target` to order against, so at
+/// boot this process starts before DNS is up. teloxide's dispatcher panics on
+/// that rather than retrying, so we check connectivity ourselves first.
+///
+/// Network errors are retried forever with backoff; an API error means the token
+/// is wrong, which will never fix itself, so that fails fast.
+async fn wait_until_reachable(bot: &Bot) -> anyhow::Result<()> {
+    let mut delay = std::time::Duration::from_secs(2);
+    let max = std::time::Duration::from_secs(60);
+    loop {
+        match bot.get_me().await {
+            Ok(me) => {
+                tracing::info!(username = me.username(), "connected to Telegram");
+                return Ok(());
+            }
+            Err(teloxide::RequestError::Api(e)) => {
+                anyhow::bail!("Telegram rejected the token: {e}");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, retry_in = ?delay, "Telegram unreachable, waiting");
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(max);
+            }
+        }
+    }
+}
+
 /// Entry point: run the Telegram dispatcher until the process stops.
 pub async fn run(cfg: TelegramConfig, pool: SqlitePool) -> anyhow::Result<()> {
     let bot = Bot::new(cfg.token);
     tracing::info!("starting Telegram bot");
+    wait_until_reachable(&bot).await?;
 
     // Publish the command list so Telegram shows it in the client's "/" menu.
     if let Err(e) = bot.set_my_commands(Command::bot_commands()).await {

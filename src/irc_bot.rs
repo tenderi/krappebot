@@ -17,9 +17,38 @@ use futures::StreamExt;
 use irc::client::prelude::{Client, Command, Config, Response};
 use irc::proto::{ChannelMode, Mode};
 use sqlx::SqlitePool;
+use std::time::{Duration, Instant};
 
-/// Entry point: connect and process messages until the connection drops.
+/// Entry point: keep an IRC connection up, reconnecting with backoff.
+///
+/// A single connect attempt is never enough — netsplits and server restarts drop
+/// connections routinely, and at boot the resolver may not be ready yet, which is
+/// exactly how this bot ended up silently dead after a reboot.
 pub async fn run(cfg: IrcConfig, pool: SqlitePool) -> anyhow::Result<()> {
+    const MIN_DELAY: Duration = Duration::from_secs(5);
+    const MAX_DELAY: Duration = Duration::from_secs(300);
+    let mut delay = MIN_DELAY;
+
+    loop {
+        let started = Instant::now();
+        match connect_and_run(cfg.clone(), pool.clone()).await {
+            Ok(()) => tracing::warn!("IRC connection closed"),
+            Err(e) => tracing::warn!(error = %e, "IRC connection failed"),
+        }
+
+        // A connection that stayed up for a while is a fresh problem rather than
+        // a tight reconnect loop, so it gets the short delay again.
+        if started.elapsed() > Duration::from_secs(60) {
+            delay = MIN_DELAY;
+        }
+        tracing::info!(retry_in = ?delay, "reconnecting to IRC");
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(MAX_DELAY);
+    }
+}
+
+/// One connection: connect and process messages until the stream ends.
+async fn connect_and_run(cfg: IrcConfig, pool: SqlitePool) -> anyhow::Result<()> {
     let config = Config {
         nickname: Some(cfg.nickname.clone()),
         nick_password: cfg.nickserv_password.clone(),

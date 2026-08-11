@@ -1,15 +1,23 @@
 [Unit]
 Description=krappebot — IRC + Telegram hangover counter
-After=network-online.target
-Wants=network-online.target
+# Deliberately no network-online.target: that target does not exist in the
+# systemd *user* manager, so a user unit cannot order against it and will start
+# before DNS is up. Both bots wait for their network themselves (Telegram polls
+# getMe, IRC reconnects with backoff), and Restart=always is the backstop for
+# anything that still kills the process.
+#
+# The start limit only bites on failures the process exits over — a rejected
+# token, unparseable config — not on a network outage, which it waits through.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
 # Runs from the repo dir so dotenvy finds .env and the SQLite file lives there.
 WorkingDirectory=%h/krappebot
 ExecStart=%h/krappebot/target/release/krappebot
-Restart=on-failure
-RestartSec=5
+Restart=always
+RestartSec=10
 
 [Install]
 WantedBy=default.target

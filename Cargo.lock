@@ -1113,6 +1113,7 @@ dependencies = [
  "futures",
  "irc",
  "rand 0.8.7",
+ "rustls",
  "serde",
  "sqlx",
  "teloxide",
