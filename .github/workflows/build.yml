@@ -1,0 +1,26 @@
+name: Build release binary
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install musl target and tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: Build (static musl binary)
+        run: cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: krappebot-x86_64-linux-musl
+          path: target/x86_64-unknown-linux-musl/release/krappebot
+          retention-days: 7
